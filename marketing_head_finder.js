@@ -1,13 +1,9 @@
-const readline = require('readline');
+const fs = require('fs');
+const csv = require('csv-parser');
+const createCsvWriter = require('csv-writer').createObjectCsvWriter;
 const https = require('https');
 const querystring = require('querystring');
 require('dotenv').config();
-
-// Create readline interface for user input
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
 
 // Function to make API request to SERP API
 function searchMarketingHead(companyName) {
@@ -20,7 +16,7 @@ function searchMarketingHead(companyName) {
       return;
     }
     
-    // Construct the search query - removed LinkedIn reference
+    // Construct the search query
     const searchQuery = `The Current Indian CMO OR marketing head of ${companyName}`;
     
     // Parameters for the API request
@@ -191,58 +187,112 @@ function verifyMarketingHead(name, companyName) {
   });
 }
 
-// Main function
-async function main() {
-  console.log("===== Marketing Head Finder =====");
+// Process a single company
+async function processCompany(companyName) {
+  console.log(`\nProcessing: ${companyName}`);
   
-  rl.question("Enter company name: ", async (companyName) => {
-    console.log(`\nSearching for marketing head of ${companyName}...`);
+  try {
+    console.log(`Searching for marketing head of ${companyName}...`);
+    const potentialHeads = await searchMarketingHead(companyName);
     
-    try {
-      const potentialHeads = await searchMarketingHead(companyName);
+    if (potentialHeads && potentialHeads.length > 0) {
+      console.log(`Found ${potentialHeads.length} potential candidates. Verifying...`);
       
-      if (potentialHeads && potentialHeads.length > 0) {
-        console.log("\nVerifying potential marketing heads...");
+      const verifiedResults = [];
+      
+      // Verify each potential marketing head
+      for (const person of potentialHeads) {
+        console.log(`Verifying ${person.name}...`);
+        const verification = await verifyMarketingHead(person.name, companyName);
         
-        const verifiedResults = [];
-        
-        // Verify each potential marketing head
-        for (const person of potentialHeads) {
-          console.log(`Verifying ${person.name}...`);
-          const verification = await verifyMarketingHead(person.name, companyName);
-          
-          if (verification.isConfirmed) {
-            verifiedResults.push({
-              ...person,
-              role: verification.role
-            });
-          }
-        }
-        
-        // Display verified results
-        if (verifiedResults.length > 0) {
-          console.log("\nConfirmed marketing heads:");
-          verifiedResults.forEach((result, index) => {
-            console.log(`${index + 1}. ${result.name} - ${result.role}`);
+        if (verification.isConfirmed) {
+          verifiedResults.push({
+            company: companyName,
+            name: person.name,
+            role: verification.role,
+            verified: 'Yes'
           });
         } else {
-          console.log(`\nNo confirmed marketing heads found for ${companyName}.`);
-          console.log("Here are the potential candidates that couldn't be verified:");
-          potentialHeads.forEach((result, index) => {
-            console.log(`${index + 1}. ${result.name}`);
+          // Add unverified candidates too, but mark them as unverified
+          verifiedResults.push({
+            company: companyName,
+            name: person.name,
+            role: 'Unknown',
+            verified: 'No'
           });
         }
-      } else {
-        console.log(`\nNo marketing head profiles found for ${companyName}.`);
-        console.log("Try a different company name or check if the company has a marketing department.");
       }
-    } catch (error) {
-      console.error(error);
-    } finally {
-      rl.close();
+      
+      return verifiedResults;
+    } else {
+      console.log(`No marketing head profiles found for ${companyName}.`);
+      return [{
+        company: companyName,
+        name: 'Not Found',
+        role: 'N/A',
+        verified: 'N/A'
+      }];
     }
-  });
+  } catch (error) {
+    console.error(`Error processing ${companyName}: ${error}`);
+    return [{
+      company: companyName,
+      name: 'Error',
+      role: error.toString(),
+      verified: 'N/A'
+    }];
+  }
 }
 
+// Main function to process CSV
+async function processCSV(inputFile, outputFile) {
+  console.log("===== Marketing Head Finder =====");
+  console.log(`Reading companies from ${inputFile}...`);
+  
+  const companies = [];
+  
+  // Read companies from CSV
+  await new Promise((resolve) => {
+    fs.createReadStream(inputFile)
+      .pipe(csv())
+      .on('data', (row) => {
+        // Assuming the CSV has a column named 'company'
+        if (row.company) {
+          companies.push(row.company);
+        }
+      })
+      .on('end', () => {
+        resolve();
+      });
+  });
+  
+  console.log(`Found ${companies.length} companies to process.`);
+  
+  // Process each company
+  const allResults = [];
+  for (const company of companies) {
+    const results = await processCompany(company);
+    allResults.push(...results);
+  }
+  
+  // Write results to CSV
+  const csvWriter = createCsvWriter({
+    path: outputFile,
+    header: [
+      {id: 'company', title: 'Company'},
+      {id: 'name', title: 'Marketing Head'},
+      {id: 'role', title: 'Role'},
+      {id: 'verified', title: 'Verified'}
+    ]
+  });
+  
+  await csvWriter.writeRecords(allResults);
+  console.log(`\nResults written to ${outputFile}`);
+}
+
+// Check command line arguments
+const inputFile = process.argv[2] || 'companies.csv';
+const outputFile = process.argv[3] || 'results.csv';
+
 // Run the main function
-main();
+processCSV(inputFile, outputFile).catch(console.error);
